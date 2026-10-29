@@ -24,8 +24,34 @@ def find_login_sequences(rows, min_failures=3, window_minutes=5):
     Parameters are positive numbers. Use loops, dictionaries, lists, sorted,
     and the imported timedelta. No additional packages are needed.
     """
-    # TODO 1: replace this raise with your implementation.
-    raise NotImplementedError('Complete find_login_sequences')
+    window = timedelta(minutes=window_minutes)
+    failures_by_group = {}
+    successes = []
+    for row in rows:
+        key = (row['username'], row['source_ip'], row['host'])
+        if row['result'] == 'FAIL':
+            failures_by_group.setdefault(key, []).append(row)
+        elif row['result'] == 'SUCCESS':
+            successes.append(row)
+
+    alerts = []
+    for success in successes:
+        key = (success['username'], success['source_ip'], success['host'])
+        start, end = success['timestamp'] - window, success['timestamp']
+        # Lower bound inclusive, success instant exclusive.
+        supporting = [fail for fail in failures_by_group.get(key, [])
+                      if start <= fail['timestamp'] < end]
+        if len(supporting) < min_failures:
+            continue
+        supporting = sorted(supporting, key=lambda fail: (fail['timestamp'], fail['event_id']))
+        alerts.append({'username': success['username'],
+                       'source_ip': success['source_ip'],
+                       'host': success['host'],
+                       'session_id': success['session_id'],
+                       'success_id': success['event_id'],
+                       'success_time': success['timestamp'],
+                       'failure_ids': [fail['event_id'] for fail in supporting]})
+    return sorted(alerts, key=lambda alert: (alert['success_time'], alert['success_id']))
 
 def correlate_downloads(alerts, file_rows, followup_minutes=10):
     """Enrich each alert with file activity; return a new list of new dicts.
@@ -44,8 +70,29 @@ def correlate_downloads(alerts, file_rows, followup_minutes=10):
     Do not mutate either input or its nested lists. Do not merge sessions based
     only on a shared account. No hardcoded IDs or outcomes; no extra packages.
     """
-    # TODO 2: replace this raise with your implementation.
-    raise NotImplementedError('Complete correlate_downloads')
+    followup = timedelta(minutes=followup_minutes)
+    downloads_by_session = {}
+    for row in file_rows:
+        if row['action'] == 'DOWNLOAD' and row['result'] == 'SUCCESS':
+            key = (row['username'], row['host'], row['session_id'])
+            downloads_by_session.setdefault(key, []).append(row)
+
+    findings = []
+    for alert in alerts:
+        key = (alert['username'], alert['host'], alert['session_id'])
+        start = alert['success_time']
+        end = start + followup
+        # Closed window: both the login instant and T + followup are included.
+        matches = sorted((row for row in downloads_by_session.get(key, [])
+                          if start <= row['timestamp'] <= end),
+                         key=lambda row: (row['timestamp'], row['event_id']))
+        finding = dict(alert)
+        finding['failure_ids'] = list(alert['failure_ids'])
+        finding['download_ids'] = [row['event_id'] for row in matches]
+        finding['download_count'] = len(matches)
+        finding['total_bytes'] = sum(row['bytes'] for row in matches)
+        findings.append(finding)
+    return sorted(findings, key=lambda item: (-item['total_bytes'], item['success_time'], item['success_id']))
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
